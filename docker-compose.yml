@@ -1,0 +1,201 @@
+version: '3.8'
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: ./airflow/Dockerfile/Dockerfile
+    args:
+      AIRFLOW_IMAGE_TAG: ${AIRFLOW_IMAGE_TAG}
+  environment:
+    - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+    - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${DB_AIRFLOW_USER}:${DB_AIRFLOW_PASSWORD}@postgres-airflow:5432/airflow
+    - AIRFLOW__CORE__FERNET_KEY=${AIRFLOW_FERNET_KEY}
+    - AIRFLOW__CORE__LOAD_EXAMPLES=false
+    - AIRFLOW__CORE__LOGGING_LEVEL=INFO
+    - MINIO_USER=${MINIO_USER}
+    - MINIO_PASSWORD=${MINIO_PASSWORD}
+    - DB_BUSINESS_USER=${DB_BUSINESS_USER}
+    - DB_BUSINESS_PASSWORD=${DB_BUSINESS_PASSWORD}
+    - DB_BUSINESS_NAME=${DB_BUSINESS_NAME}
+    - MINIO_ENDPOINT=http://minio:9000
+    - _PIP_ADDITIONAL_REQUIREMENTS=boto3 apache-airflow-providers-amazon apache-airflow-providers-apache-spark pyspark==${SPARK_VERSION} apache-airflow-providers-docker
+    - JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+    - ./airflow/plugins:/opt/airflow/plugins
+    - ./data:/opt/airflow/data
+    - ./spark/jobs:/opt/spark/jobs
+    - ./spark/jars:/opt/spark/extra-jars
+  user: "${AIRFLOW_UID}:0"
+  depends_on:
+    postgres-airflow:
+      condition: service_healthy
+
+services:
+  # --- METADATA DATABASE (Airflow) ---
+  postgres-airflow:
+    image: postgres:${POSTGRES_VERSION}
+    environment:
+      - POSTGRES_USER=${DB_AIRFLOW_USER}
+      - POSTGRES_PASSWORD=${DB_AIRFLOW_PASSWORD}
+      - POSTGRES_DB=airflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_airflow_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_AIRFLOW_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- BUSINESS DATABASE (Données Métier / Data Warehouse) ---
+  postgres-business:
+    image: postgres:${POSTGRES_VERSION}
+    environment:
+      - POSTGRES_USER=${DB_BUSINESS_USER}
+      - POSTGRES_PASSWORD=${DB_BUSINESS_PASSWORD}
+      - POSTGRES_DB=${DB_BUSINESS_NAME}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_business_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_BUSINESS_USER} -d ${DB_BUSINESS_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- STORAGE (MinIO) ---
+  minio:
+    image: quay.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_PASSWORD}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- MINIO INITIALIZATION (Création automatique des buckets) ---
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 ${MINIO_USER} ${MINIO_PASSWORD};
+      mc mb --ignore-existing myminio/bronze;
+      mc mb --ignore-existing myminio/silver;
+      echo 'Buckets initialisés avec succès !';
+      exit 0;
+      "
+
+  # --- COMPUTE (Apache Spark Officiel) ---
+  spark-master:
+    image: apache/spark:${SPARK_VERSION}
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
+    environment:
+      - MINIO_USER=${MINIO_USER}
+      - MINIO_PASSWORD=${MINIO_PASSWORD}
+      - MINIO_ENDPOINT=http://minio:9000
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+    volumes:
+    - ./spark/jars:/opt/spark/extra-jars
+    - ./spark/jobs:/opt/spark/jobs
+
+  spark-worker:
+    image: apache/spark:${SPARK_VERSION}
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+    environment:
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2g
+      - MINIO_USER=${MINIO_USER}
+      - MINIO_PASSWORD=${MINIO_PASSWORD}
+      - MINIO_ENDPOINT=http://minio:9000
+    ports:
+      - "8081:8081"
+    depends_on:
+      - spark-master
+    volumes:
+    - ./spark/jars:/opt/spark/extra-jars
+    - ./spark/jobs:/opt/spark/jobs
+
+  # --- ORCHESTRATION (Apache Airflow) ---
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username admin \
+          --firstname Admin \
+          --lastname Admin \
+          --role Admin \
+          --email admin@example.com \
+          --password admin
+        airflow connections add spark_default \
+          --conn-type spark \
+          --conn-host spark://spark-master \
+          --conn-port 7077 || true
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8085:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  # --- DATAVIZ (Streamlit) ---
+  streamlit:
+    image: python:3.11-slim
+    working_dir: /app
+    command: >
+      sh -c "
+      pip install --no-cache-dir streamlit psycopg2-binary pandas sqlalchemy &&
+      streamlit run app.py --server.port=8501 --server.address=0.0.0.0
+      "
+    ports:
+      - "8501:8501"
+    environment:
+      - DB_BUSINESS_USER=${DB_BUSINESS_USER}
+      - DB_BUSINESS_PASSWORD=${DB_BUSINESS_PASSWORD}
+      - DB_BUSINESS_NAME=${DB_BUSINESS_NAME}
+    volumes:
+      - ./streamlit:/app
+    depends_on:
+      postgres-business:
+        condition: service_healthy
+
+volumes:
+  postgres_airflow_data:
+  postgres_business_data:
+  minio_data:

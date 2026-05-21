@@ -1,0 +1,39 @@
+# ==== Secrets ====
+.env
+*.pem
+*.key
+
+# ==== Python ====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+env/
+.env/
+
+# ==== Jupyter ====
+.ipynb_checkpoints/
+
+# ==== Airflow ====
+airflow/logs/
+airflow/plugins/__pycache__/
+
+# ==== Spark ====
+spark/jars/*.jar
+spark/jobs/__pycache__/
+spark-warehouse/
+metastore_db/
+
+# ==== Data (optionnel : décommente si tu ne veux pas push les CSV) ====
+# data/
+
+# ==== IDE / OS ====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
