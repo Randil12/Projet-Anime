@@ -178,9 +178,9 @@ services:
   streamlit:
     image: python:3.11-slim
     working_dir: /app
-    command: >
+    command: >  
       sh -c "
-      pip install --no-cache-dir streamlit psycopg2-binary pandas sqlalchemy &&
+      pip install --no-cache-dir streamlit psycopg2-binary pandas sqlalchemy plotly &&
       streamlit run app.py --server.port=8501 --server.address=0.0.0.0
       "
     ports:
@@ -189,6 +189,8 @@ services:
       - DB_BUSINESS_USER=${DB_BUSINESS_USER}
       - DB_BUSINESS_PASSWORD=${DB_BUSINESS_PASSWORD}
       - DB_BUSINESS_NAME=${DB_BUSINESS_NAME}
+      - DB_BUSINESS_HOST=postgres-business
+      - DB_BUSINESS_PORT=5432
     volumes:
       - ./streamlit:/app
     depends_on:
