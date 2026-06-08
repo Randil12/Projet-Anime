@@ -278,3 +278,9 @@ docker compose down -v
 ```
 
 Attention : `docker compose down -v` supprime les donnees Postgres et MinIO.
+
+
+## Lien de présentation
+
+
+https://www.canva.com/design/DAHLCEBuChE/8sxKTxytUVeX4v5y5GXnDA/edit
