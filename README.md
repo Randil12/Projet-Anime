@@ -27,14 +27,40 @@ https://www.kaggle.com/datasets/CooperUnion/anime-recommendations-database
 
 ![Architecture du pipeline](image/architecture.png)
 
+L'architecture suit une logique de pipeline data par couches. Airflow orchestre
+toutes les etapes, depuis les fichiers CSV sources jusqu'au dashboard Streamlit.
+
 ```text
-data/*.csv
-  -> Bronze MinIO
-  -> Silver Parquet MinIO
-  -> Gold Postgres
-  -> ALS recommendations
-  -> Streamlit
+Source CSV
+  -> S3 bronze
+  -> S3 silver cleaned
+  -> Business BDD
+  -> S3 ml-model
+  -> recommendations
+  -> Streamlit dashboard
 ```
+
+Le flux se lit de gauche a droite :
+
+- `Source CSV` : fichiers `anime.csv` et `rating.csv` places dans le dossier `data`.
+- `S3 bronze` : zone brute dans MinIO. Les fichiers CSV sont copies tels quels, sans transformation.
+- `S3 silver cleaned` : zone nettoyee dans MinIO. Spark lit le Bronze, nettoie les donnees et ecrit du Parquet.
+- `Business BDD` : base PostgreSQL metier. Elle contient les tables Gold pretes pour l'analyse : dimensions, faits, bridge genres et recommandations.
+- `S3 ml-model` : stockage du modele ALS entraine par Spark MLlib.
+- `Streamlit Dashboard` : application de visualisation. Elle lit les tables Gold et les recommandations depuis PostgreSQL.
+
+Airflow est place au-dessus du schema car il pilote l'ensemble du pipeline. Le
+DAG `dag_full_pipeline` lance les etapes dans l'ordre :
+
+```text
+bronze -> silver -> gold -> ml
+```
+
+Les roles sont separes par usage :
+
+- `Data Engineer` : ecrit les couches Bronze, Silver et Gold.
+- `Data Scientist` : lit les donnees analytiques et ecrit les recommandations ML.
+- `Data Analyst` : consulte les donnees via Streamlit en lecture seule.
 
 Le DAG principal est `dag_full_pipeline`. Il est organise en groupes :
 
