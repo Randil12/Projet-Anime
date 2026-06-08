@@ -1,28 +1,33 @@
+"""
+Pipeline ML simplifié : ALS → recommandations dans Postgres.
+
+  1. ml_01_train_als                (Spark)  silver/rating → ALS model
+  2. ml_02_generate_recommendations (Spark)  ALS + silver → Postgres recommendations
+"""
 import os
 from datetime import datetime, timedelta
+
 from airflow import DAG
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 
 default_args = {
     "owner": "airflow",
-    "retries": 1,
-    "retry_delay": timedelta(minutes=2),
+    "retries": 0,
+    "retry_delay": timedelta(minutes=5),
 }
 
 with DAG(
-    dag_id="dag_silver_clean",
-    description="Nettoyage Bronze → Silver via SparkSubmitOperator",
+    dag_id="dag_ml_recommendation",
+    description="ALS → table recommendations (Postgres)",
     start_date=datetime(2024, 1, 1),
     schedule_interval=None,
     default_args=default_args,
     catchup=False,
-    tags=["silver", "clean"],
+    tags=["ml", "recommendation"],
 ) as dag:
 
-    # Récupération et nettoyage de l'URL MinIO (retrait du http:// requis par certaines versions de S3A)
     MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT")
-    
-    # Configuration Hadoop S3A commune pour MinIO
+
     spark_s3_conf = {
         "spark.hadoop.fs.s3a.endpoint": MINIO_ENDPOINT,
         "spark.hadoop.fs.s3a.access.key": os.environ.get("MINIO_USER"),
@@ -32,30 +37,29 @@ with DAG(
         "spark.hadoop.fs.s3a.connection.ssl.enabled": "false",
     }
 
-    # Liste de tes JARs locaux (basée sur le chemin d'Airflow : /opt/spark/extra-jars)
-    spark_jars = ",".join([
+    spark_jars_minio = ",".join([
         "/opt/spark/extra-jars/hadoop-aws-3.3.4.jar",
         "/opt/spark/extra-jars/aws-java-sdk-bundle-1.12.262.jar",
         "/opt/spark/extra-jars/wildfly-openssl-1.0.7.Final.jar",
     ])
 
-    # Tâche 1 : Nettoyage Anime
-    clean_anime = SparkSubmitOperator(
-        task_id="silver_clean_anime",
-        application="/opt/spark/jobs/silver_clean_anime.py",
+    # Pour le job qui écrit dans Postgres : ajouter le driver JDBC
+    spark_jars_with_pg = spark_jars_minio + ",/opt/spark/extra-jars/postgresql-42.7.3.jar"
+
+    train_als = SparkSubmitOperator(
+        task_id="ml_01_train_als",
+        application="/opt/spark/jobs/ml_01_train_als.py",
         conn_id="spark_default",
         conf=spark_s3_conf,
-        jars=spark_jars,
+        jars=spark_jars_minio,
     )
 
-    # Tâche 2 : Nettoyage Rating
-    clean_rating = SparkSubmitOperator(
-        task_id="silver_clean_rating",
-        application="/opt/spark/jobs/silver_clean_rating.py",
+    generate_recos = SparkSubmitOperator(
+        task_id="ml_02_generate_recommendations",
+        application="/opt/spark/jobs/ml_02_generate_recommendations.py",
         conn_id="spark_default",
         conf=spark_s3_conf,
-        jars=spark_jars,
+        jars=spark_jars_with_pg,
     )
 
-    # Ordre de dépendance
-    clean_anime >> clean_rating
+    train_als >> generate_recos

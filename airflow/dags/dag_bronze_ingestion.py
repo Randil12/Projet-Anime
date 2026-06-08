@@ -46,7 +46,7 @@ with DAG(
     dag_id="dag_bronze_ingestion",
     description="Ingestion des fichiers CSV locaux vers le bucket bronze MinIO",
     start_date=datetime(2024, 1, 1),
-    schedule_interval="@once",
+    schedule_interval=None,
     default_args=default_args,
     catchup=False,
     tags=["bronze", "ingestion"],

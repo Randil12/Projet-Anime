@@ -1,0 +1,26 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadSilver",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::silver",
+        "arn:aws:s3:::silver/*"
+      ]
+    },
+    {
+      "Sid": "FullAccessMlModels",
+      "Effect": "Allow",
+      "Action": ["s3:*"],
+      "Resource": [
+        "arn:aws:s3:::ml-models",
+        "arn:aws:s3:::ml-models/*"
+      ]
+    }
+  ]
+}

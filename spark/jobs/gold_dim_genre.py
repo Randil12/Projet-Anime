@@ -2,13 +2,14 @@ import os
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
+from db_write_utils import append_rejects, split_duplicate_rejects, split_null_rejects, write_staging_then_replace
 
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_USER")
 MINIO_SECRET_KEY = os.environ.get("MINIO_PASSWORD")
 
-DB_USER = os.environ.get("DB_BUSINESS_USER")
-DB_PASSWORD = os.environ.get("DB_BUSINESS_PASSWORD")
+DB_USER = os.environ.get("DB_WRITE_USER", "data_engineer")
+DB_PASSWORD = os.environ.get("DB_WRITE_PASSWORD")
 DB_NAME = os.environ.get("DB_BUSINESS_NAME")
 JDBC_URL = f"jdbc:postgresql://postgres-business:5432/{DB_NAME}"
 
@@ -51,12 +52,27 @@ if __name__ == "__main__":
         "genre_id", F.row_number().over(window)
     ).select("genre_id", "genre_name")
 
-    (dim_genre.write
-        .mode("overwrite")
-        .option("truncate", "true")
-        .option("cascadeTruncate", "true")
-        .jdbc(url=JDBC_URL, table="dim_genre", properties=JDBC_PROPS))
+    valid, null_rejects = split_null_rejects(dim_genre, ["genre_id", "genre_name"])
+    valid, duplicate_id_rejects = split_duplicate_rejects(valid, ["genre_id"])
+    valid, duplicate_name_rejects = split_duplicate_rejects(valid, ["genre_name"])
+    rejects = null_rejects.unionByName(duplicate_id_rejects).unionByName(duplicate_name_rejects)
+    rejected_count = append_rejects(
+        rejects, JDBC_URL, JDBC_PROPS, "gold_dim_genre", "dim_genre"
+    )
 
-    print(f"gold_dim_genre : {dim_genre.count()} genres uniques écrits")
+    inserted_count = write_staging_then_replace(
+        valid,
+        JDBC_URL,
+        JDBC_PROPS,
+        staging_table="stg_dim_genre",
+        target_table="dim_genre",
+        columns=["genre_id", "genre_name"],
+        truncate_cascade=True,
+    )
+
+    print(
+        f"gold_dim_genre : {inserted_count} genres ecrits, "
+        f"{rejected_count} lignes ignorees dans reject_records"
+    )
 
     spark.stop()

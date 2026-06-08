@@ -13,7 +13,7 @@ with DAG(
     dag_id="dag_gold_aggregate",
     description="Silver → Gold (star schema dans Postgres) via SparkSubmitOperator",
     start_date=datetime(2024, 1, 1),
-    schedule_interval="@once",
+    schedule_interval=None,
     default_args=default_args,
     catchup=False,
     tags=["gold", "star-schema"],

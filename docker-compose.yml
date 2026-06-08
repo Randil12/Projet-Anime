@@ -9,16 +9,19 @@ x-airflow-common: &airflow-common
   environment:
     - AIRFLOW__CORE__EXECUTOR=LocalExecutor
     - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${DB_AIRFLOW_USER}:${DB_AIRFLOW_PASSWORD}@postgres-airflow:5432/airflow
-    - AIRFLOW__CORE__FERNET_KEY=${AIRFLOW_FERNET_KEY}
     - AIRFLOW__CORE__LOAD_EXAMPLES=false
     - AIRFLOW__CORE__LOGGING_LEVEL=INFO
     - MINIO_USER=${MINIO_USER}
     - MINIO_PASSWORD=${MINIO_PASSWORD}
-    - DB_BUSINESS_USER=${DB_BUSINESS_USER}
-    - DB_BUSINESS_PASSWORD=${DB_BUSINESS_PASSWORD}
     - DB_BUSINESS_NAME=${DB_BUSINESS_NAME}
+    - DB_BUSINESS_HOST=postgres-business
+    - DB_BUSINESS_PORT=5432
+    - DB_WRITE_USER=data_engineer
+    - DB_WRITE_PASSWORD=${PG_DE_PASSWORD}
+    - DB_ML_USER=data_scientist
+    - DB_ML_PASSWORD=${PG_DS_PASSWORD}
     - MINIO_ENDPOINT=http://minio:9000
-    - _PIP_ADDITIONAL_REQUIREMENTS=boto3 apache-airflow-providers-amazon apache-airflow-providers-apache-spark pyspark==${SPARK_VERSION} apache-airflow-providers-docker
+    - _PIP_ADDITIONAL_REQUIREMENTS=boto3 psycopg2-binary apache-airflow-providers-amazon apache-airflow-providers-apache-spark pyspark==${SPARK_VERSION} apache-airflow-providers-docker
     - JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
   volumes:
     - ./airflow/dags:/opt/airflow/dags
@@ -57,6 +60,10 @@ services:
       - POSTGRES_USER=${DB_BUSINESS_USER}
       - POSTGRES_PASSWORD=${DB_BUSINESS_PASSWORD}
       - POSTGRES_DB=${DB_BUSINESS_NAME}
+      # Mots de passe des rôles RBAC (lus par postgres/init/02_roles.sh)
+      - PG_DE_PASSWORD=${PG_DE_PASSWORD}
+      - PG_DS_PASSWORD=${PG_DS_PASSWORD}
+      - PG_DA_PASSWORD=${PG_DA_PASSWORD}
     ports:
       - "5433:5432"
     volumes:
@@ -86,20 +93,23 @@ services:
       timeout: 5s
       retries: 5
 
-  # --- MINIO INITIALIZATION (Création automatique des buckets) ---
+  # --- MINIO INITIALIZATION (buckets + RBAC) ---
   minio-init:
     image: minio/mc:latest
     depends_on:
       minio:
         condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set myminio http://minio:9000 ${MINIO_USER} ${MINIO_PASSWORD};
-      mc mb --ignore-existing myminio/bronze;
-      mc mb --ignore-existing myminio/silver;
-      echo 'Buckets initialisés avec succès !';
-      exit 0;
-      "
+    environment:
+      - MINIO_USER=${MINIO_USER}
+      - MINIO_PASSWORD=${MINIO_PASSWORD}
+      - MINIO_DE_USER=${MINIO_DE_USER}
+      - MINIO_DE_PASSWORD=${MINIO_DE_PASSWORD}
+      - MINIO_DS_USER=${MINIO_DS_USER}
+      - MINIO_DS_PASSWORD=${MINIO_DS_PASSWORD}
+    volumes:
+      - ./minio/policies:/policies
+      - ./minio/init.sh:/init.sh
+    entrypoint: ["/bin/sh", "/init.sh"]
 
   # --- COMPUTE (Apache Spark Officiel) ---
   spark-master:
@@ -186,8 +196,8 @@ services:
     ports:
       - "8501:8501"
     environment:
-      - DB_BUSINESS_USER=${DB_BUSINESS_USER}
-      - DB_BUSINESS_PASSWORD=${DB_BUSINESS_PASSWORD}
+      - DB_READ_USER=data_analyst
+      - DB_READ_PASSWORD=${PG_DA_PASSWORD}
       - DB_BUSINESS_NAME=${DB_BUSINESS_NAME}
       - DB_BUSINESS_HOST=postgres-business
       - DB_BUSINESS_PORT=5432

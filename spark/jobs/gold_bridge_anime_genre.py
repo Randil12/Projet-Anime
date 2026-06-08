@@ -1,13 +1,14 @@
 import os
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
+from db_write_utils import append_rejects, reject_left_anti, split_duplicate_rejects, split_null_rejects, write_staging_then_replace
 
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_USER")
 MINIO_SECRET_KEY = os.environ.get("MINIO_PASSWORD")
 
-DB_USER = os.environ.get("DB_BUSINESS_USER")
-DB_PASSWORD = os.environ.get("DB_BUSINESS_PASSWORD")
+DB_USER = os.environ.get("DB_WRITE_USER", "data_engineer")
+DB_PASSWORD = os.environ.get("DB_WRITE_PASSWORD")
 DB_NAME = os.environ.get("DB_BUSINESS_NAME")
 JDBC_URL = f"jdbc:postgresql://postgres-business:5432/{DB_NAME}"
 
@@ -51,20 +52,52 @@ if __name__ == "__main__":
         table="dim_genre",
         properties=JDBC_PROPS,
     )
+    dim_anime = spark.read.jdbc(
+        url=JDBC_URL,
+        table="dim_anime",
+        properties=JDBC_PROPS,
+    ).select("anime_id")
 
     # Joindre pour transformer les genre_name en genre_id
-    # distinct() : protège contre les doublons (genre listé 2 fois dans la même chaîne)
-    bridge = (
-        anime_genres.join(dim_genre, on="genre_name", how="inner")
-        .select("anime_id", "genre_id")
-        .distinct()
+    valid_genres, missing_genre_rejects = reject_left_anti(
+        anime_genres,
+        dim_genre.select("genre_name"),
+        ["genre_name"],
+        "genre not found in dim_genre",
+    )
+    bridge = valid_genres.join(dim_genre, on="genre_name", how="inner").select(
+        "anime_id", "genre_id"
     )
 
-    (bridge.write
-        .mode("overwrite")
-        .option("truncate", "true")
-        .jdbc(url=JDBC_URL, table="bridge_anime_genre", properties=JDBC_PROPS))
+    valid, null_rejects = split_null_rejects(bridge, ["anime_id", "genre_id"])
+    valid, missing_anime_rejects = reject_left_anti(
+        valid,
+        dim_anime,
+        ["anime_id"],
+        "anime_id not found in dim_anime",
+    )
+    valid, duplicate_rejects = split_duplicate_rejects(valid, ["anime_id", "genre_id"])
+    rejects = (
+        missing_genre_rejects.unionByName(null_rejects, allowMissingColumns=True)
+        .unionByName(missing_anime_rejects, allowMissingColumns=True)
+        .unionByName(duplicate_rejects, allowMissingColumns=True)
+    )
+    rejected_count = append_rejects(
+        rejects, JDBC_URL, JDBC_PROPS, "gold_bridge_anime_genre", "bridge_anime_genre"
+    )
 
-    print(f"gold_bridge_anime_genre : {bridge.count()} liaisons écrites")
+    inserted_count = write_staging_then_replace(
+        valid,
+        JDBC_URL,
+        JDBC_PROPS,
+        staging_table="stg_bridge_anime_genre",
+        target_table="bridge_anime_genre",
+        columns=["anime_id", "genre_id"],
+    )
+
+    print(
+        f"gold_bridge_anime_genre : {inserted_count} liaisons ecrites, "
+        f"{rejected_count} lignes ignorees dans reject_records"
+    )
 
     spark.stop()

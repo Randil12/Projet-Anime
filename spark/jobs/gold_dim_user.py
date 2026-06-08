@@ -1,9 +1,10 @@
 import os
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
+from db_write_utils import append_rejects, split_duplicate_rejects, split_null_rejects, write_staging_then_replace
 
-DB_USER = os.environ.get("DB_BUSINESS_USER")
-DB_PASSWORD = os.environ.get("DB_BUSINESS_PASSWORD")
+DB_USER = os.environ.get("DB_WRITE_USER", "data_engineer")
+DB_PASSWORD = os.environ.get("DB_WRITE_PASSWORD")
 DB_NAME = os.environ.get("DB_BUSINESS_NAME")
 JDBC_URL = f"jdbc:postgresql://postgres-business:5432/{DB_NAME}"
 
@@ -35,11 +36,25 @@ if __name__ == "__main__":
         F.avg("rating").alias("user_average_given_rating"),
     )
 
-    (dim_user.write
-        .mode("overwrite")
-        .option("truncate", "true")
-        .jdbc(url=JDBC_URL, table="dim_user", properties=JDBC_PROPS))
+    valid, null_rejects = split_null_rejects(dim_user, ["user_id"])
+    valid, duplicate_rejects = split_duplicate_rejects(valid, ["user_id"])
+    rejects = null_rejects.unionByName(duplicate_rejects)
+    rejected_count = append_rejects(
+        rejects, JDBC_URL, JDBC_PROPS, "gold_dim_user", "dim_user"
+    )
 
-    print(f"gold_dim_user : {dim_user.count()} utilisateurs écrits")
+    inserted_count = write_staging_then_replace(
+        valid,
+        JDBC_URL,
+        JDBC_PROPS,
+        staging_table="stg_dim_user",
+        target_table="dim_user",
+        columns=["user_id", "user_total_reviews", "user_average_given_rating"],
+    )
+
+    print(
+        f"gold_dim_user : {inserted_count} utilisateurs ecrits, "
+        f"{rejected_count} lignes ignorees dans reject_records"
+    )
 
     spark.stop()

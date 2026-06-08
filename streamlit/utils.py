@@ -3,8 +3,8 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
 
-DB_USER = os.environ.get("DB_BUSINESS_USER")
-DB_PASSWORD = os.environ.get("DB_BUSINESS_PASSWORD")
+DB_USER = os.environ.get("DB_READ_USER", "data_analyst")
+DB_PASSWORD = os.environ.get("DB_READ_PASSWORD")
 DB_NAME = os.environ.get("DB_BUSINESS_NAME")
 DB_HOST = os.environ.get("DB_BUSINESS_HOST")
 DB_PORT = os.environ.get("DB_BUSINESS_PORT")
